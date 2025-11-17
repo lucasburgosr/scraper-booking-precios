@@ -24,7 +24,7 @@ def traer_ids_pendientes(session):
         session.query(Alojamiento.id, Alojamiento.link)
         .outerjoin(MetricasAlojamiento, Alojamiento.id == MetricasAlojamiento.id_alojamiento)
         .filter(MetricasAlojamiento.id_alojamiento.is_(None))
-        .order_by(Alojamiento.id.asc())
+        .order_by(Alojamiento.id.desc())
         .execution_options(stream_results=True)
         .yield_per(2000)
     )
