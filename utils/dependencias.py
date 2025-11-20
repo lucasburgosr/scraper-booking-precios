@@ -3,7 +3,7 @@ from selenium import webdriver
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
 
-fecha_reserva = date(2025, 12, 15)
+fecha_reserva = date(2026, 1, 15)
 fecha_checkin = fecha_reserva.strftime("%Y-%m-%d")
 fecha_checkout = (fecha_reserva + timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -69,8 +69,8 @@ def inicializar_driver():
     driver = webdriver.Chrome(service=Service(
     ChromeDriverManager().install()), options=options)
 
-    driver.set_page_load_timeout(90)
-    driver.set_script_timeout(60)
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(15)
 
     driver.execute_cdp_cmd("Network.enable", {})
     driver.execute_cdp_cmd("Network.setBlockedURLs", {

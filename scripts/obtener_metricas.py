@@ -206,4 +206,4 @@ def obtener_metricas_alojamiento():
 try:
     obtener_metricas_alojamiento()
 finally:
-    pass
+    xvfb_process.terminate()

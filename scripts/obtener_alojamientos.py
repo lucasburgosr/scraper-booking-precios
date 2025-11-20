@@ -1,8 +1,3 @@
-from utils.dependencias import inicializar_driver, parsear_a_float
-from utils.dependencias import destinos, fecha_reserva
-from models.precios_reserva import PrecioReserva
-from models.alojamiento import Alojamiento
-from config.dbconfig import Base, engine, session
 from datetime import date, timedelta
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -10,8 +5,16 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from contextlib import suppress
 import traceback, time, locale, os, sys, subprocess
+
 proyecto_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(proyecto_dir)
+
+from utils.dependencias import inicializar_driver, parsear_a_float
+from utils.dependencias import destinos, fecha_reserva
+from models.precios_reserva import PrecioReserva
+from models.alojamiento import Alojamiento
+from models.metricas_alojamiento import MetricasAlojamiento
+from config.dbconfig import Base, engine, session
 
 os.system("rm -f /tmp/.X99-lock")
 
@@ -120,7 +123,7 @@ def obtener_alojamientos(driver, destino, fecha_reserva):
                 By.CSS_SELECTOR, "a[data-testid='title-link']").get_attribute("href")
 
             alojamiento_guardado = session.query(Alojamiento).filter(
-                Alojamiento.nombre == nombre).first()
+                Alojamiento.nombre == nombre, Alojamiento.destino == destino).first()
 
             if alojamiento_guardado is None:
                 alojamiento_obj = Alojamiento(
@@ -130,15 +133,12 @@ def obtener_alojamientos(driver, destino, fecha_reserva):
                     tipo_alojamiento=tipo_alojamiento,
                     link=link
                 )
-                session.add(alojamiento_obj)
-                session.flush()
             else:
-                alojamiento_guardado.fecha_registro = date.today()
-                alojamiento_guardado.fecha_reserva = alojamiento_guardado.fecha_registro + \
-                    timedelta(15)
-                alojamiento_guardado.puntuacion = puntuacion
                 alojamiento_guardado.link = link
                 alojamiento_obj = alojamiento_guardado
+
+            session.add(alojamiento_obj)    
+            session.flush()
 
             nuevo_precio = PrecioReserva(
                 id_alojamiento=alojamiento_obj.id,
@@ -184,6 +184,6 @@ for destino, link in destinos.items():
                 driver.quit()
         time.sleep(2)
 
-"""
-    xvfb_process.terminate()
-"""
+
+xvfb_process.terminate()
+

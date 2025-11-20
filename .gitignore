@@ -2,3 +2,5 @@
 .venv
 
 csvs
+
+__pycache__
