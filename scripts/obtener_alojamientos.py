@@ -1,28 +1,35 @@
+import os
+import sys
+import subprocess
+
+proyecto_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(proyecto_dir)
+
+from config.dbconfig import Base, engine, session
+from models.metricas_alojamiento import MetricasAlojamiento
+from models.alojamiento import Alojamiento
+from models.precios_reserva import PrecioReserva
+from utils.dependencias import destinos, fecha_reserva
+from utils.dependencias import inicializar_driver, parsear_a_float
 from datetime import date, timedelta
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from contextlib import suppress
-import traceback, time, locale, os, sys, subprocess
+import traceback
+import time
+import locale
 
-proyecto_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(proyecto_dir)
 
-from utils.dependencias import inicializar_driver, parsear_a_float
-from utils.dependencias import destinos, fecha_reserva
-from models.precios_reserva import PrecioReserva
-from models.alojamiento import Alojamiento
-from models.metricas_alojamiento import MetricasAlojamiento
-from config.dbconfig import Base, engine, session
-
-os.system("rm -f /tmp/.X99-lock")
+""" os.system("rm -f /tmp/.X99-lock")
 
 xvfb_process = subprocess.Popen(
     ["Xvfb", ":99", "-screen", "0", "1366x768x24", "-ac"])
 os.environ["DISPLAY"] = ":99"
 
-locale.setlocale(locale.LC_ALL, 'es_ES.UTF-8')
+locale.setlocale(locale.LC_ALL, 'es_ES.UTF-8') """
+
 
 def parsear_impuestos(num_string: str):
     num_corregido = None
@@ -43,7 +50,18 @@ def cargar_todos_los_alojamientos(driver, link):
     driver.get(link)
     wait = WebDriverWait(driver, 15)
     height_previo = 0
+    iteracion = 0
+
+    try:
+        popup = wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "button[aria-label='Ignorar información sobre el inicio de sesión.']"))
+        ).click()
+    except:
+        print("El pop up no está presente")
+
     while True:
+        iteracion += 1
         try:
             driver.execute_script(
                 "window.scrollTo(0, document.body.scrollHeight);")
@@ -51,7 +69,7 @@ def cargar_todos_los_alojamientos(driver, link):
             print("Se agotó el tiempo al hacer scroll")
             break
 
-        time.sleep(2)
+        time.sleep(4)
 
         try:
             boton_cargar_mas = wait.until(EC.presence_of_element_located(
@@ -70,6 +88,8 @@ def cargar_todos_los_alojamientos(driver, link):
         try:
             nuevo_height = driver.execute_script(
                 "return document.body.scrollHeight")
+            print(
+                f"Scroll {iteracion} height_previo = {height_previo}, nuevo_height = {nuevo_height}")
         except TimeoutException:
             print("Timeout al obtener scrollHeight, finalizando scroll")
             break
@@ -84,6 +104,8 @@ def obtener_alojamientos(driver, destino, fecha_reserva):
     driver.execute_script("window.scrollTo(0, 0)")
     alojamientos = driver.find_elements(
         By.CSS_SELECTOR, "div[data-testid='property-card-container']")
+
+    print(f"Cantidad de alojamientos encontrados: {len(alojamientos)}")
 
     for alojamiento in alojamientos:
         try:
@@ -137,7 +159,7 @@ def obtener_alojamientos(driver, destino, fecha_reserva):
                 alojamiento_guardado.link = link
                 alojamiento_obj = alojamiento_guardado
 
-            session.add(alojamiento_obj)    
+            session.add(alojamiento_obj)
             session.flush()
 
             nuevo_precio = PrecioReserva(
@@ -185,5 +207,4 @@ for destino, link in destinos.items():
         time.sleep(2)
 
 
-xvfb_process.terminate()
-
+# xvfb_process.terminate()
