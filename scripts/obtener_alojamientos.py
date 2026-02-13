@@ -1,210 +1,258 @@
+
 import os
 import sys
-import subprocess
 
+# Add project root to path
 proyecto_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(proyecto_dir)
 
-from config.dbconfig import Base, engine, session
-from models.metricas_alojamiento import MetricasAlojamiento
-from models.alojamiento import Alojamiento
+from utils.dependencias import destinos, inicializar_driver, parsear_a_float, parsear_impuestos
 from models.precios_reserva import PrecioReserva
-from utils.dependencias import destinos, fecha_reserva
-from utils.dependencias import inicializar_driver, parsear_a_float
-from datetime import date, timedelta
+from models.alojamiento import Alojamiento
+from models.metricas_alojamiento import MetricasAlojamiento  # noqa: F401 - requerido por SQLAlchemy para resolver relaciones
+from config.settings import RESERVATION_DATE
+from config.dbconfig import get_db, Base, engine
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from contextlib import suppress
-import traceback
+import logging
 import time
-import locale
+import traceback
+from datetime import date
+from contextlib import contextmanager
+
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("scraper.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
-""" os.system("rm -f /tmp/.X99-lock")
+def scroll_to_load_all(driver):
+    wait = WebDriverWait(driver, 10)
 
-xvfb_process = subprocess.Popen(
-    ["Xvfb", ":99", "-screen", "0", "1366x768x24", "-ac"])
-os.environ["DISPLAY"] = ":99"
-
-locale.setlocale(locale.LC_ALL, 'es_ES.UTF-8') """
-
-
-def parsear_impuestos(num_string: str):
-    num_corregido = None
-    if ("+ US$" in num_string and "de impuestos y cargos" in num_string):
-        num_sin_signos = num_string.replace(
-            "+ US$", "").replace("de impuestos y cargos", "").strip()
-        num_corregido = num_sin_signos.replace(".", "").replace(",", ".")
-    elif "Incluye impuestos y cargos" in num_string:
-        return None
-
-    if num_corregido is None:
-        return 0
-
-    return float(num_corregido)
-
-
-def cargar_todos_los_alojamientos(driver, link):
-    driver.get(link)
-    wait = WebDriverWait(driver, 15)
-    height_previo = 0
-    iteracion = 0
-
+    # Try to close popup if it appears
     try:
-        popup = wait.until(
+        popup_btn = wait.until(
             EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, "button[aria-label='Ignorar información sobre el inicio de sesión.']"))
-        ).click()
-    except:
-        print("El pop up no está presente")
+        )
+        popup_btn.click()
+        logger.info("Login popup closed.")
+    except TimeoutException:
+        pass  # Popup didn't appear, normal behavior
+    except Exception as e:
+        logger.debug(f"Popup check exception: {e}")
+
+    prev_height = 0
+    iteration = 0
 
     while True:
-        iteracion += 1
+        iteration += 1
         try:
             driver.execute_script(
                 "window.scrollTo(0, document.body.scrollHeight);")
-        except TimeoutException:
-            print("Se agotó el tiempo al hacer scroll")
+            time.sleep(3)  # Give time for content to load
+
+            # Click "Load more" if available
+            try:
+                load_more_btn = driver.find_element(
+                    By.XPATH, "//button[span[contains(text(), 'Cargar más resultados')]]")
+                if load_more_btn.is_displayed():
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView();", load_more_btn)
+                    load_more_btn.click()
+                    logger.info("Clicked 'Load more results' button.")
+                    time.sleep(3)
+            except NoSuchElementException:
+                pass
+
+            new_height = driver.execute_script(
+                "return document.body.scrollHeight")
+            # logger.debug(f"Scroll {iteration}: prev_height={prev_height}, new_height={new_height}")
+
+            if new_height == prev_height:
+                break
+            prev_height = new_height
+
+        except Exception as e:
+            logger.error(f"Error during scrolling: {e}")
             break
 
-        time.sleep(4)
 
+def extract_alojamiento_data(element):
+    data = {
+        "nombre": "Desconocido",
+        "ubicacion": "Desconocido",
+        "precio": 0.0,
+        "impuestos": 0.0,
+        "tipo": "Sin clasificar",
+        "puntuacion": 0.0,
+        "link": ""
+    }
+
+    try:
+        data["nombre"] = element.find_element(
+            By.CSS_SELECTOR, "div[data-testid='title']").text
+        data["link"] = element.find_element(
+            By.CSS_SELECTOR, "a[data-testid='title-link']").get_attribute("href")
+
+        # Ubicación (opcional, el selector puede cambiar)
         try:
-            boton_cargar_mas = wait.until(EC.presence_of_element_located(
-                (By.XPATH,
-                 "//button[span[contains(text(), 'Cargar más resultados')]]")
-            ))
-            if boton_cargar_mas.is_displayed():
-                driver.execute_script(
-                    "arguments[0].scrollIntoView();", boton_cargar_mas)
-                boton_cargar_mas.click()
-                print("Se hizo click en el botón 'Cargar más resultados'")
-                time.sleep(2)
-        except:
+            data["ubicacion"] = element.find_element(
+                By.CSS_SELECTOR, "span[data-testid='address']").text
+        except NoSuchElementException:
             pass
 
+        # Price
         try:
-            nuevo_height = driver.execute_script(
-                "return document.body.scrollHeight")
-            print(
-                f"Scroll {iteracion} height_previo = {height_previo}, nuevo_height = {nuevo_height}")
-        except TimeoutException:
-            print("Timeout al obtener scrollHeight, finalizando scroll")
-            break
+            price_str = element.find_element(
+                By.CSS_SELECTOR, "span[data-testid='price-and-discounted-price']").text
+            data["precio"] = parsear_a_float(price_str)
+        except NoSuchElementException:
+            pass
 
-        if nuevo_height == height_previo:
-            break
-        height_previo = nuevo_height
-
-
-def obtener_alojamientos(driver, destino, fecha_reserva):
-    wait = WebDriverWait(driver, 15)
-    driver.execute_script("window.scrollTo(0, 0)")
-    alojamientos = driver.find_elements(
-        By.CSS_SELECTOR, "div[data-testid='property-card-container']")
-
-    print(f"Cantidad de alojamientos encontrados: {len(alojamientos)}")
-
-    for alojamiento in alojamientos:
+        # Taxes
         try:
-            nombre = alojamiento.find_element(
-                By.CSS_SELECTOR, "div[data-testid='title']").text
-            ubicacion = alojamiento.find_element(
-                By.CSS_SELECTOR, "span[data-testid='address']").text
+            taxes_str = element.find_element(
+                By.CSS_SELECTOR, "div[data-testid='taxes-and-charges']").text
+            data["impuestos"] = parsear_impuestos(taxes_str)
+        except NoSuchElementException:
+            pass
 
-            try:
-                precio_string = alojamiento.find_element(
-                    By.CSS_SELECTOR, "span[data-testid='price-and-discounted-price']").text
-                precio = parsear_a_float(precio_string)
-                impuestos_string = alojamiento.find_element(
-                    By.CSS_SELECTOR, "div[data-testid='taxes-and-charges']").text
-                impuestos = parsear_impuestos(impuestos_string)
-            except:
-                precio = 0
-                impuestos = 0
+        # Type
+        try:
+            data["tipo"] = element.find_element(By.TAG_NAME, "h4").text
+        except NoSuchElementException:
+            pass
 
-            try:
-                tipo_alojamiento = alojamiento.find_element(
-                    By.TAG_NAME, "h4").text
-            except:
-                tipo_alojamiento = "Sin clasificar"
+        # Score
+        try:
+            score_str = element.find_element(
+                By.CSS_SELECTOR, "div[data-testid='review-score']").text
+            # Format usually: "Puntuación\n8,5\n..."
+            lines = score_str.split("\n")
+            if len(lines) > 1:
+                score_val = lines[1].replace(",", ".")
+                data["puntuacion"] = float(score_val)
+        except (NoSuchElementException, IndexError, ValueError):
+            pass
 
-            try:
-                puntuacion_string = alojamiento.find_element(
-                    By.CSS_SELECTOR, "div[data-testid='review-score']").text
-                lineas = puntuacion_string.split("\n")
-                linea = lineas[1]
-                puntuacion_con_punto = linea.replace(",", ".")
-                puntuacion = float(puntuacion_con_punto)
-            except Exception:
-                puntuacion = 0
+    except Exception as e:
+        logger.warning(f"Error extracting data for an element: {e}")
+        return None
 
-            link = alojamiento.find_element(
-                By.CSS_SELECTOR, "a[data-testid='title-link']").get_attribute("href")
+    return data
 
-            alojamiento_guardado = session.query(Alojamiento).filter(
-                Alojamiento.nombre == nombre, Alojamiento.destino == destino).first()
 
-            if alojamiento_guardado is None:
-                alojamiento_obj = Alojamiento(
-                    destino=destino,
-                    nombre=nombre,
-                    ubicacion=ubicacion,
-                    tipo_alojamiento=tipo_alojamiento,
-                    link=link
-                )
-            else:
-                alojamiento_guardado.link = link
-                alojamiento_obj = alojamiento_guardado
+def save_alojamiento(session, data, destino):
+    try:
+        # Check if exists
+        alojamiento = session.query(Alojamiento).filter(
+            Alojamiento.nombre == data["nombre"],
+            Alojamiento.destino == destino
+        ).first()
 
-            session.add(alojamiento_obj)
-            session.flush()
-
-            nuevo_precio = PrecioReserva(
-                id_alojamiento=alojamiento_obj.id,
-                fecha_registro=date.today(),
-                fecha_reserva=fecha_reserva,
-                precio_en_dolares=precio,
-                impuestos_en_dolares=impuestos
+        if not alojamiento:
+            alojamiento = Alojamiento(
+                destino=destino,
+                nombre=data["nombre"],
+                ubicacion=data["ubicacion"],
+                tipo_alojamiento=data["tipo"],
+                link=data["link"]
             )
-            session.add(nuevo_precio)
+            session.add(alojamiento)
+            session.flush()  # flush to get ID
+        else:
+            # Update link if changed
+            if alojamiento.link != data["link"]:
+                alojamiento.link = data["link"]
 
-            try:
-                session.commit()
-                print("Guardado exitosamente")
-            except Exception as e:
-                session.rollback()
-                print("Error al guardar: ", e)
+        # Add price record
+        nuevo_precio = PrecioReserva(
+            id_alojamiento=alojamiento.id,
+            fecha_registro=date.today(),
+            fecha_reserva=RESERVATION_DATE,
+            precio_en_dolares=data["precio"],
+            impuestos_en_dolares=data["impuestos"] or 0.0  # Ensure not None
+        )
+        session.add(nuevo_precio)
+        session.commit()
+        # logger.info(f"Saved: {data['nombre']}")
+        return True
 
-        except NoSuchElementException as e:
-            print("Error al obtener datos del alojamiento")
-            continue
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Database error saving {data['nombre']}: {e}")
+        return False
 
 
-Base.metadata.create_all(engine)
+def procesar_destino(driver, session, destino, url):
+    logger.info(f"Processing destination: {destino}")
+    try:
+        driver.get(url)
+        scroll_to_load_all(driver)
 
-for destino, link in destinos.items():
-    print(f"== Procesando destino {destino} ==")
+        driver.execute_script("window.scrollTo(0, 0)")  # Go back to top
+
+        cards = driver.find_elements(
+            By.CSS_SELECTOR, "div[data-testid='property-card-container']")
+        count = len(cards)
+        logger.info(f"Found {count} properties for {destino}")
+
+        saved_count = 0
+        for card in cards:
+            data = extract_alojamiento_data(card)
+            if data and save_alojamiento(session, data, destino):
+                saved_count += 1
+
+        logger.info(
+            f"Successfully saved {saved_count}/{count} properties for {destino}")
+
+    except Exception as e:
+        logger.error(f"Error processing {destino}: {e}")
+        traceback.print_exc()
+
+
+def main():
+    logger.info("Starting Booking Scraper")
+
+    # Ensure tables exist
+    Base.metadata.create_all(engine)
+
     driver = None
     try:
         driver = inicializar_driver()
-        cargar_todos_los_alojamientos(driver=driver, link=link)
-        obtener_alojamientos(
-            driver=driver,
-            destino=destino,
-            fecha_reserva=fecha_reserva,
-        )
-        print(f"El ID de esta sesión es: {driver.session_id}")
+
+        # Use a single session for the whole run or per destination?
+        # Per destination is safer context-wise but single is fine for this script.
+        # Let's use the generator from dbconfig
+        db_gen = get_db()
+        session = next(db_gen)
+
+        try:
+            for destino, url in destinos.items():
+                procesar_destino(driver, session, destino, url)
+                time.sleep(2)  # Brief pause between destinations
+
+        finally:
+            # Clean up session (it closes in finally block of generator)
+            next(db_gen, None)
+
     except Exception as e:
-        print(f"Error al procesar el destino {destino}: {e!r}")
+        logger.critical(f"Critical error in main execution: {e}")
         traceback.print_exc()
     finally:
-        if driver is not None:
-            with suppress(Exception):
-                driver.quit()
-        time.sleep(2)
+        if driver:
+            driver.quit()
+        logger.info("Scraper finished.")
 
 
-# xvfb_process.terminate()
+if __name__ == "__main__":
+    main()

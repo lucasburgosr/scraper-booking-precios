@@ -1,12 +1,29 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from config.settings import DATABASE_URL
 
+# Create engine
 engine = create_engine(
-    'mysql+pymysql://observer:8Vko*OH0Xv@localhost:3307/booking',
+    DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=1800)
-Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-session = Session()
+    pool_recycle=1800
+)
+
+# Create Session factory
+SessionLocal = sessionmaker(
+    bind=engine, autoflush=False, expire_on_commit=False)
+
+# Declarative Base
 Base = declarative_base()
 
-# engine = create_engine('mysql+pymysql://observer:8Vko*OH0Xv@149.50.141.218:3306/booking', pool_pre_ping=True)
+
+def get_db():
+    """
+    Generator to get a database session.
+    Useful for dependency injection or context management.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

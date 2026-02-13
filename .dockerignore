@@ -1,0 +1,12 @@
+.venv
+__pycache__
+*.pyc
+.env
+scraper.log
+debug_*.png
+debug_*.html
+csvs
+.git
+.gitignore
+.claude
+CLAUDE.md
