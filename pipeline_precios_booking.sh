@@ -1,52 +1,59 @@
 #!/bin/bash
 
-# --- Configuración de rutas y usuarios ---
-WORKSPACE="/home/observer/scripts/scraper-booking"
-PUBLIC_DATA_DIR="/home/observer/public_html/data"
-MYSQL_OUTFILE="/var/lib/mysql-files/booking.csv"
-USER_WEB="observer:observer"
-DB_NAME="booking"
+# ==============================================================================
+# Pipeline Scraper Booking.com
+# Este script ejecuta el contenedor Docker del scraper y guarda los logs.
+# ==============================================================================
 
-# Crear carpeta temporal si no existe
-mkdir -p "$WORKSPACE"
+# Definir variables
+CONTAINER_NAME="booking_scraper"
+IMAGE_NAME="booking_scraper_img"
+LOG_DIR="/var/log/booking"
+LOG_FILE="${LOG_DIR}/scraper_$(date +%Y%m%d_%H%M%S).log"
+PROJECT_DIR=$(pwd) # Asumimos que se ejecuta desde la raíz del proyecto
 
-echo ">>> Iniciando Pipeline: $(date)"
+echo "=================================================="
+echo "Iniciando Pipeline de Scraper de Booking.com"
+echo "Fecha y hora: $(date)"
+echo "Los logs detallados se guardarán en: $LOG_FILE"
+echo "=================================================="
 
-# 1. Ejecución del ETL (Docker)
-echo "1/5 Ejecutando ETL..."
-docker run --rm --name scraper_booking scraper_booking || { echo "Falló el ETL"; exit 1; }
+# 1. Crear directorio de logs si no existe (requiere permisos de superusuario por ser /var/log)
+if [ ! -d "$LOG_DIR" ]; then
+    echo "Creando directorio de logs en $LOG_DIR..."
+    sudo mkdir -p "$LOG_DIR"
+    sudo chown $USER:$USER "$LOG_DIR"
+fi
 
-# 2. Exportación MySQL (Host)
-echo "2/5 Exportando desde MySQL..."
-rm -f "$MYSQL_OUTFILE" # Limpieza necesaria para INTO OUTFILE
-mysql -u root "$DB_NAME" -e "
-    (SELECT 'localidad', 'fecha_registro', 'fecha_proyeccion', 'dias_proyeccion', 'establecimientos_ofrecidos', 'establecimientos_disponibles', 'porcentaje_ocupacion')
-    UNION ALL
-    (SELECT localidad, fecha_registro, fecha_proyeccion, dias_proyeccion, establecimientos_ofrecidos, establecimientos_disponibles, porcentaje_ocupacion FROM proyeccion_export)
-    INTO OUTFILE '$MYSQL_OUTFILE'
-    FIELDS TERMINATED BY ';'
-    LINES TERMINATED BY '\n';
-" || { echo "Falló la exportación MySQL"; exit 1; }
+# 2. Construir la imagen Docker (Opcional, comentalo si la imagen ya existe y no hay cambios)
+echo "Construyendo la imagen Docker..." | tee -a "$LOG_FILE"
+docker build -t "$IMAGE_NAME" "$PROJECT_DIR" 2>&1 | tee -a "$LOG_FILE"
 
-# Mover al workspace y dar permisos iniciales para que el siguiente Docker lo lea
-mv "$MYSQL_OUTFILE" "$WORKSPACE/booking.csv"
-chown $USER_WEB "$WORKSPACE/booking.csv"
-chmod 644 "$WORKSPACE/booking.csv"
+# 3. Eliminar contenedor previo si existiera (limpieza)
+if [ "$(docker ps -aq -f name=^/${CONTAINER_NAME}$)" ]; then
+    echo "Limpiando contenedor anterior..." | tee -a "$LOG_FILE"
+    docker rm -f "$CONTAINER_NAME" 2>&1 | tee -a "$LOG_FILE"
+fi
 
-# 3. Ejecución de Cálculos (Docker)
-echo "3/5 Ejecutando contenedor de cálculos..."
-docker run --rm -v "$WORKSPACE":/data procesamiento-ocupacion || { echo "Falló el contenedor de cálculos"; exit 1; }
+# 4. Ejecutar el contenedor
+echo "Ejecutando el contenedor (Scraper)..." | tee -a "$LOG_FILE"
+# Se asume que existe un archivo .env en la misma carpeta del script
+docker run --name "$CONTAINER_NAME" \
+    --env-file "$PROJECT_DIR/.env" \
+    --network host \
+    --shm-size="2g" \
+    "$IMAGE_NAME" 2>&1 | tee -a "$LOG_FILE"
 
-# 4. Copia a Carpeta Pública
-echo "4/5 Publicando archivos en public_html..."
-cp "$WORKSPACE/booking.csv" "$PUBLIC_DATA_DIR/"
-cp "$WORKSPACE/consultas_proyeccion.csv" "$PUBLIC_DATA_DIR/"
-cp "$WORKSPACE/parametros_regresion.csv" "$PUBLIC_DATA_DIR/"
-cp "$WORKSPACE/comparacion_r2.csv" "$PUBLIC_DATA_DIR/"
+# 5. Comprobar resultado
+EXIT_CODE=$(docker inspect "$CONTAINER_NAME" --format='{{.State.ExitCode}}')
 
-# 5. Aplicación de Permisos y Propietario (Sustituye a tus 8 crons)
-echo "5/5 Ajustando permisos finales..."
-chown $USER_WEB "$PUBLIC_DATA_DIR"/*.csv
-chmod o+r "$PUBLIC_DATA_DIR"/*.csv
+if [ "$EXIT_CODE" -eq 0 ]; then
+    echo "STATUS: ÉXITO. El scraper finalizó correctamente." | tee -a "$LOG_FILE"
+else
+    echo "STATUS: ERROR. El scraper falló con código $EXIT_CODE." | tee -a "$LOG_FILE"
+fi
 
-echo ">>> Pipeline completado con éxito: $(date)"
+echo "=================================================="
+echo "Pipeline finalizado a las $(date)"
+echo "Logs completos guardados en: $LOG_FILE"
+echo "=================================================="

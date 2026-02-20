@@ -2,17 +2,16 @@
 import os
 import sys
 
-# Add project root to path
 proyecto_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(proyecto_dir)
 
 from utils.dependencias import destinos, inicializar_driver, parsear_a_float, parsear_impuestos
 from models.precios_reserva import PrecioReserva
 from models.alojamiento import Alojamiento
-from models.metricas_alojamiento import MetricasAlojamiento  # noqa: F401 - requerido por SQLAlchemy para resolver relaciones
+from models.metricas_alojamiento import MetricasAlojamiento  # requerido por SQLAlchemy para resolver relaciones
 from config.settings import RESERVATION_DATE
 from config.dbconfig import get_db, Base, engine
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
@@ -20,24 +19,20 @@ import logging
 import time
 import traceback
 from datetime import date
-from contextlib import contextmanager
 
-# Configure Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("scraper.log"),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
 
-def scroll_to_load_all(driver):
+def scroll_de_carga(driver):
     wait = WebDriverWait(driver, 10)
 
-    # Try to close popup if it appears
     try:
         popup_btn = wait.until(
             EC.element_to_be_clickable(
@@ -46,7 +41,7 @@ def scroll_to_load_all(driver):
         popup_btn.click()
         logger.info("Login popup closed.")
     except TimeoutException:
-        pass  # Popup didn't appear, normal behavior
+        pass
     except Exception as e:
         logger.debug(f"Popup check exception: {e}")
 
@@ -58,9 +53,8 @@ def scroll_to_load_all(driver):
         try:
             driver.execute_script(
                 "window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(3)  # Give time for content to load
+            time.sleep(3)
 
-            # Click "Load more" if available
             try:
                 load_more_btn = driver.find_element(
                     By.XPATH, "//button[span[contains(text(), 'Cargar más resultados')]]")
@@ -75,18 +69,17 @@ def scroll_to_load_all(driver):
 
             new_height = driver.execute_script(
                 "return document.body.scrollHeight")
-            # logger.debug(f"Scroll {iteration}: prev_height={prev_height}, new_height={new_height}")
 
             if new_height == prev_height:
                 break
             prev_height = new_height
 
         except Exception as e:
-            logger.error(f"Error during scrolling: {e}")
+            logger.error(f"Error durante el scroll: {e}")
             break
 
 
-def extract_alojamiento_data(element):
+def extraer_datos_alojamiento(element):
     data = {
         "nombre": "Desconocido",
         "ubicacion": "Desconocido",
@@ -103,14 +96,12 @@ def extract_alojamiento_data(element):
         data["link"] = element.find_element(
             By.CSS_SELECTOR, "a[data-testid='title-link']").get_attribute("href")
 
-        # Ubicación (opcional, el selector puede cambiar)
         try:
             data["ubicacion"] = element.find_element(
                 By.CSS_SELECTOR, "span[data-testid='address']").text
         except NoSuchElementException:
             pass
 
-        # Price
         try:
             price_str = element.find_element(
                 By.CSS_SELECTOR, "span[data-testid='price-and-discounted-price']").text
@@ -118,7 +109,6 @@ def extract_alojamiento_data(element):
         except NoSuchElementException:
             pass
 
-        # Taxes
         try:
             taxes_str = element.find_element(
                 By.CSS_SELECTOR, "div[data-testid='taxes-and-charges']").text
@@ -126,17 +116,13 @@ def extract_alojamiento_data(element):
         except NoSuchElementException:
             pass
 
-        # Type
         try:
             data["tipo"] = element.find_element(By.TAG_NAME, "h4").text
         except NoSuchElementException:
             pass
-
-        # Score
         try:
             score_str = element.find_element(
                 By.CSS_SELECTOR, "div[data-testid='review-score']").text
-            # Format usually: "Puntuación\n8,5\n..."
             lines = score_str.split("\n")
             if len(lines) > 1:
                 score_val = lines[1].replace(",", ".")
@@ -145,15 +131,14 @@ def extract_alojamiento_data(element):
             pass
 
     except Exception as e:
-        logger.warning(f"Error extracting data for an element: {e}")
+        logger.warning(f"Error al extraer datos de un alojamiento: {e}")
         return None
 
     return data
 
 
-def save_alojamiento(session, data, destino):
+def guardar_alojamiento(session, data, destino):
     try:
-        # Check if exists
         alojamiento = session.query(Alojamiento).filter(
             Alojamiento.nombre == data["nombre"],
             Alojamiento.destino == destino
@@ -168,90 +153,84 @@ def save_alojamiento(session, data, destino):
                 link=data["link"]
             )
             session.add(alojamiento)
-            session.flush()  # flush to get ID
+            session.flush()  # flush para obtener el ID
         else:
-            # Update link if changed
             if alojamiento.link != data["link"]:
                 alojamiento.link = data["link"]
 
-        # Add price record
         nuevo_precio = PrecioReserva(
             id_alojamiento=alojamiento.id,
             fecha_registro=date.today(),
             fecha_reserva=RESERVATION_DATE,
             precio_en_dolares=data["precio"],
-            impuestos_en_dolares=data["impuestos"] or 0.0  # Ensure not None
+            impuestos_en_dolares=data["impuestos"] or 0.0
         )
         session.add(nuevo_precio)
         session.commit()
-        # logger.info(f"Saved: {data['nombre']}")
+        # logger.info(f"Guardado: {data['nombre']}")
         return True
 
     except Exception as e:
         session.rollback()
-        logger.error(f"Database error saving {data['nombre']}: {e}")
+        logger.error(f"Error al guardar {data['nombre']}: {e}")
         return False
 
 
 def procesar_destino(driver, session, destino, url):
-    logger.info(f"Processing destination: {destino}")
+    logger.info(f"Procesando destino: {destino}")
     try:
         driver.get(url)
-        scroll_to_load_all(driver)
+        scroll_de_carga(driver)
 
-        driver.execute_script("window.scrollTo(0, 0)")  # Go back to top
+        driver.execute_script("window.scrollTo(0, 0)")
 
         cards = driver.find_elements(
             By.CSS_SELECTOR, "div[data-testid='property-card-container']")
         count = len(cards)
-        logger.info(f"Found {count} properties for {destino}")
+        logger.info(f"Encontrados {count} alojamientos para {destino}")
 
         saved_count = 0
         for card in cards:
-            data = extract_alojamiento_data(card)
-            if data and save_alojamiento(session, data, destino):
+            data = extraer_datos_alojamiento(card)
+            if data and guardar_alojamiento(session, data, destino):
                 saved_count += 1
 
         logger.info(
-            f"Successfully saved {saved_count}/{count} properties for {destino}")
+            f"Guardados {saved_count}/{count} alojamientos para {destino}")
 
     except Exception as e:
-        logger.error(f"Error processing {destino}: {e}")
+        logger.error(f"Error al procesar {destino}: {e}")
         traceback.print_exc()
 
 
 def main():
-    logger.info("Starting Booking Scraper")
+    logger.info("Iniciando Scraper de Booking")
 
-    # Ensure tables exist
     Base.metadata.create_all(engine)
 
     driver = None
     try:
         driver = inicializar_driver()
 
-        # Use a single session for the whole run or per destination?
-        # Per destination is safer context-wise but single is fine for this script.
-        # Let's use the generator from dbconfig
         db_gen = get_db()
         session = next(db_gen)
 
         try:
             for destino, url in destinos.items():
                 procesar_destino(driver, session, destino, url)
-                time.sleep(2)  # Brief pause between destinations
+                time.sleep(2)
 
         finally:
-            # Clean up session (it closes in finally block of generator)
+            
             next(db_gen, None)
 
     except Exception as e:
-        logger.critical(f"Critical error in main execution: {e}")
+        logger.critical(f"Error crítico en la ejecución: {e}")
         traceback.print_exc()
     finally:
         if driver:
             driver.quit()
-        logger.info("Scraper finished.")
+        logger.info("Scraper finalizado.")
 
 
 if __name__ == "__main__":

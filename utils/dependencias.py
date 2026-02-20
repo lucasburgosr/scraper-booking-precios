@@ -1,6 +1,6 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from config.settings import CHECK_IN, CHECK_OUT, HEADLESS
+from config.settings import CHECK_IN, CHECK_OUT, HEADLESS, USER_AGENT
 
 # Parsing Functions
 
@@ -38,25 +38,25 @@ def parsear_impuestos(num_string: str) -> float:
 
     return 0.0
 
-# Driver Initialization
-
 
 def inicializar_driver():
     """Initializes Chrome WebDriver with configured options."""
     options = Options()
     options.add_argument("--no-sandbox")
     options.add_argument("--window-size=1920,1080")
-    # Overcome limited resource problems
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument(f"user-agent={USER_AGENT}")
+    options.add_argument("--disable-blink-features=AutomationControlled")
 
     if HEADLESS:
         options.add_argument("--headless=new")
 
-    # Anti-detection / preferences
     prefs = {
-        "profile.managed_default_content_settings.images": 2,  # Block images for speed
+        "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -68,7 +68,7 @@ def inicializar_driver():
     return driver
 
 
-# Destinations Configuration
+# Configuración de destinos
 # Solo parámetros funcionales: ss, dest_id, dest_type, fechas, huéspedes, moneda.
 # Los parámetros de tracking (label, sid, ac_meta, etc.) causan que Booking
 # descarte la búsqueda cuando no coinciden con una sesión válida.
@@ -77,11 +77,11 @@ _BASE = "https://www.booking.com/searchresults.es.html"
 _PARAMS = f"&lang=es&checkin={CHECK_IN}&checkout={CHECK_OUT}&group_adults=2&no_rooms=1&group_children=0&selected_currency=USD"
 
 destinos = {
-    "Mendoza": f"{_BASE}?ss=Provincia+de+Mendoza%2C+Argentina&dest_id=597&dest_type=region{_PARAMS}",
-    "Buenos Aires": f"{_BASE}?ss=Provincia+de+Buenos+Aires%2C+Argentina&dest_id=3619&dest_type=region{_PARAMS}",
-    "CABA": f"{_BASE}?ss=Buenos+Aires%2C+Ciudad+Aut%C3%B3noma+de+Buenos+Aires%2C+Argentina&dest_id=-979186&dest_type=city{_PARAMS}",
-    "Córdoba": f"{_BASE}?ss=Provincia+de+C%C3%B3rdoba%2C+Argentina&dest_id=1342&dest_type=region{_PARAMS}",
-    "Santa Fe": f"{_BASE}?ss=Provincia+de+Santa+Fe%2C+Argentina&dest_id=3628&dest_type=region{_PARAMS}",
+    # "Mendoza": f"{_BASE}?ss=Provincia+de+Mendoza%2C+Argentina&dest_id=597&dest_type=region{_PARAMS}",
+    # "Buenos Aires": f"{_BASE}?ss=Provincia+de+Buenos+Aires%2C+Argentina&dest_id=3619&dest_type=region{_PARAMS}",
+    # "CABA": f"{_BASE}?ss=Buenos+Aires%2C+Ciudad+Aut%C3%B3noma+de+Buenos+Aires%2C+Argentina&dest_id=-979186&dest_type=city{_PARAMS}",
+    # "Córdoba": f"{_BASE}?ss=Provincia+de+C%C3%B3rdoba%2C+Argentina&dest_id=1342&dest_type=region{_PARAMS}",
+    # "Santa Fe": f"{_BASE}?ss=Provincia+de+Santa+Fe%2C+Argentina&dest_id=3628&dest_type=region{_PARAMS}",
     "Neuquén": f"{_BASE}?ss=Neuqu%C3%A9n+Province%2C+Argentina&dest_id=3627&dest_type=region{_PARAMS}",
     "Salta": f"{_BASE}?ss=Provincia+de+Salta%2C+Argentina&dest_id=599&dest_type=region{_PARAMS}",
     "Jujuy": f"{_BASE}?ss=Jujuy%2C+Argentina&dest_id=596&dest_type=region{_PARAMS}",
